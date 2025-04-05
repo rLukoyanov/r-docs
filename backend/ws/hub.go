@@ -1,6 +1,8 @@
+// hub.go
 package ws
 
 import (
+	"encoding/json"
 	"log"
 	"sync"
 
@@ -8,9 +10,19 @@ import (
 )
 
 type Client struct {
-	Conn *websocket.Conn
-	ID   string
-	Send chan []byte
+	Conn     *websocket.Conn
+	ID       string
+	UserData UserData
+	Hub      *Hub
+	Send     chan []byte
+}
+
+type UserData struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Email   string `json:"email,omitempty"`
+	Image   string `json:"image,omitempty"`
+	IsOwner bool   `json:"isOwner,omitempty"`
 }
 
 type Hub struct {
@@ -24,8 +36,21 @@ func NewHub() *Hub {
 	}
 }
 
-func (h *Hub) Run() {
+func (h *Hub) Broadcast(senderID string, message []byte) {
+	h.Mutex.Lock()
+	defer h.Mutex.Unlock()
 
+	for id, client := range h.Clients {
+		if id != senderID {
+			select {
+			case client.Send <- message:
+			default:
+				log.Printf("Client %s channel full, skipping", id)
+				close(client.Send)
+				delete(h.Clients, id)
+			}
+		}
+	}
 }
 
 func (h *Hub) AddClient(c *Client) {
@@ -40,30 +65,35 @@ func (h *Hub) RemoveClient(id string) {
 	h.Mutex.Lock()
 	defer h.Mutex.Unlock()
 
-	delete(h.Clients, id)
-	h.BroadcastConnectedUsers()
+	if client, exists := h.Clients[id]; exists {
+		close(client.Send)
+		delete(h.Clients, id)
+		h.BroadcastConnectedUsers()
+	}
 }
 
 func (h *Hub) BroadcastConnectedUsers() {
-	users := make([]string, 0)
-	for id := range h.Clients {
-		users = append(users, id)
-	}
-
-	msg := []byte("users:" + join(users, ","))
-	log.Println(users, msg)
+	users := make([]UserData, 0, len(h.Clients))
 	for _, client := range h.Clients {
-		client.Send <- msg
+		users = append(users, client.UserData)
 	}
-}
 
-func join(arr []string, sep string) string {
-	out := ""
-	for i, val := range arr {
-		out += val
-		if i < len(arr)-1 {
-			out += sep
+	message := map[string]interface{}{
+		"type":  "users_update",
+		"users": users,
+	}
+
+	msg, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("Error marshalling message: %v", err)
+		return
+	}
+
+	for _, client := range h.Clients {
+		select {
+		case client.Send <- msg:
+		default:
+			log.Printf("Client %s channel full during users update", client.ID)
 		}
 	}
-	return out
 }

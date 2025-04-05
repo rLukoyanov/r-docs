@@ -16,7 +16,7 @@ func main() {
 	e.Use(middleware.CORS())
 
 	hub := ws.NewHub()
-	go hub.Run()
+	// go hub.Run()
 
 	e.GET("/ws", func(c echo.Context) error {
 		return handlers.HandleWebSocket(c, hub)
